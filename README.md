@@ -1,8 +1,8 @@
 # energy_calc
 
-Adds a sensor to Home Assistant that displays the daily ussage of your solar panels.
+Adds a sensor to Home Assistant that displays the daily usage of your solar panels.
 The integration requires two sensors: 
-1. a sensor that shall provide the current grid power (positiv for "buying power", negatvie if you "sell" power to the grid)
+1. a sensor that shall provide the current grid power (positive for "buying power", negative if you "sell" power to the grid)
 2. the current power of your solar inverter
 The integration will consume updates of both entities and integrate the current power to an energy value.
 
@@ -18,8 +18,8 @@ Platform | Description
 ## Features
 
 - Integrated two sensors values: Current grid power [W] / current solar power [W] to energy values [kWh]
-- Calucates 8 important values
-- Solar [W]: Displays the given solar inverter power sensor value (not caluclated)
+- Calculates 8 important values
+- Solar [W]: Displays the given solar inverter power sensor value (not calculated)
 - Solar generated [kWh]: The total amount of power that you solar installation provided as of now (resets at midnight)
 - Solar to home [kWh]: The amount of solar power that you've consumed yourself
 - Solar to home [%]: Same value as percent. 60% means 60% of your solar power is consumed by your home. This is also primary the sensor value!
@@ -77,7 +77,7 @@ Key | Type | Required | Default | Description
 
 ## GUI configuration 
 
-Config flow is supported and is the prefered way to setup the integration. (No need to restart Home-Assistant)
+Config flow is supported and is the preferred way to setup the integration. (No need to restart Home-Assistant)
 
 ## Manual configuration 
 
