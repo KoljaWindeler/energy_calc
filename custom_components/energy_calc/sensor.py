@@ -139,8 +139,8 @@ class energy_calc_sensor(Entity):
 
 				# check if the data are somewhat strange
 				if(time_delta>600):
-					_LOGGER.error("warning: big time gap of "+str(time_delta)+" sec, on sample "+str(self._sample)+" now:"+str(now)+" and last_updated_gen "+str(w['last_updated_gen']))
-					_LOGGER.error("the power value was "+str(v)+". This sample will be ignored by setting the time_delta to 0")
+					_LOGGER.warning("big time gap of "+str(time_delta)+" sec, on sample "+str(self._sample)+" now:"+str(now)+" and last_updated_gen "+str(w['last_updated_gen']))
+					_LOGGER.warning("the power value was "+str(v)+". This sample will be ignored by setting the time_delta to 0")
 					time_delta = 0
 
 				generated_ws = v*time_delta
@@ -153,8 +153,8 @@ class energy_calc_sensor(Entity):
 
 				# reset data when day changes, we're using NET here because solar won't change over night
 				if(w['last_updated_net']==None or now.day != w['last_updated_net'].day):
-					_LOGGER.error("reset data, due to day change")
-					_LOGGER.error("Sample "+str(self._sample)+" old was "+str(now)+" and last_update_net "+str(w['last_updated_net']))
+					#_LOGGER.info("reset data, due to day change")
+					#_LOGGER.info("Sample "+str(self._sample)+" old was "+str(now)+" and last_update_net "+str(w['last_updated_net']))
 					self.energy_calc['extra']['generated_kwh'] = 0
 					self.energy_calc['extra']['feed_in_kwh'] = 0
 					self.energy_calc['extra']['feed_out_kwh'] = 0
@@ -171,8 +171,8 @@ class energy_calc_sensor(Entity):
 
 				# check if the data are somewhat strange
 				if(time_delta>600):
-					_LOGGER.error("warning: big time gap of "+str(time_delta)+" sec, on sample "+str(self._sample)+" now:"+str(now)+" and last_updated_net "+str(w['last_updated_net']))
-					_LOGGER.error("the power value was "+str(v)+". This sample will be ignored by setting the time_delta to 0")
+					_LOGGER.warning("big time gap of "+str(time_delta)+" sec, on sample "+str(self._sample)+" now:"+str(now)+" and last_updated_net "+str(w['last_updated_net']))
+					_LOGGER.warning("the power value was "+str(v)+". This sample will be ignored by setting the time_delta to 0")
 					time_delta = 0
 
 				self.energy_calc['extra']['net_w'] = float(new_state.state)
@@ -328,7 +328,7 @@ class energy_calc_sensor(Entity):
 
 			# merge and sort by date
 			states = states_net + states_gen
-			_LOGGER.error(states[0].last_updated)
+			#_LOGGER.error(states[0].last_updated)
 
 
 			states.sort(key=lambda x: x.last_updated)
