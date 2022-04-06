@@ -232,7 +232,7 @@ class energy_calc_sensor(Entity):
 		return self._name
 
 	@property
-	def device_state_attributes(self):
+	def extra_state_attributes(self):
 		"""Return the state attributes."""
 		return self._state_attributes
 
@@ -318,12 +318,12 @@ class energy_calc_sensor(Entity):
 
 			# grab grid data
 			query = session.query(States).filter(States.entity_id == self._net)
-			query = query.filter(States.created >= records_older_then)
+			query = query.filter(States.last_updated >= records_older_then)
 			states_net = execute(query)
 
 			# grab solar data
 			query = session.query(States).filter(States.entity_id == self._gen)
-			query = query.filter(States.created >= records_older_then)
+			query = query.filter(States.last_updated >= records_older_then)
 			states_gen = execute(query)
 
 			# merge and sort by date
