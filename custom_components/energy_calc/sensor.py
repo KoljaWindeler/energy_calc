@@ -10,12 +10,12 @@ https://github.com/home-assistant/core/blob/dev/homeassistant/components/statist
 """
 import logging
 from homeassistant.helpers.entity import Entity, async_generate_entity_id
-from homeassistant.components.recorder.models import States
-from homeassistant.components.recorder.util import execute, session_scope
+from homeassistant.components.recorder import get_instance, history
 from homeassistant.components.sensor import ENTITY_ID_FORMAT
 from homeassistant.const import (CONF_NAME, CONF_ENTITY_ID, EVENT_HOMEASSISTANT_START, STATE_UNKNOWN,ATTR_UNIT_OF_MEASUREMENT)
 from homeassistant.helpers.event import async_track_state_change
-from homeassistant.core import callback
+from homeassistant.core import callback, State
+
 
 
 from pytz import timezone
@@ -73,7 +73,8 @@ class energy_calc_sensor(Entity):
 				'self_consumed_kwh': 0,
 				'total_consumed_kwh': 0,
 				'last_updated_gen': None,
-				'last_updated_net': None
+				'last_updated_net': None,
+				'last_updated_calc': None,
 			},
 			'self_consumed_per': 0,
 		}
@@ -105,10 +106,6 @@ class energy_calc_sensor(Entity):
 
 	def add_state(self,entity, old_state="", new_state=""):
 		"""Handle the sensor state changes."""
-		#_LOGGER.error("INCOMING")
-		#_LOGGER.error(new_state.state)
-		#_LOGGER.error(new_state.entity_id)
-		#_LOGGER.error(new_state.last_changed)
 		try:
 			if(new_state.state=="unknown"):
 				return
@@ -122,98 +119,100 @@ class energy_calc_sensor(Entity):
 				new_state.last_changed = new_state.last_changed.replace(tzinfo=timezone('UTC'))
 			now = new_state.last_changed
 
-			v = 0
+			gen_w_old = self.energy_calc['extra']['generator_w']
+			net_w_old = self.energy_calc['extra']['net_w']
 			w = self.energy_calc['extra']
 			self._sample += 1
 
-			# decide if the is grid or solar
-			if(new_state.entity_id == self._gen):
-
-				#_LOGGER.error("GEN")
-				v = self.energy_calc['extra']['generator_w']
-				# if this is the very first dataset, lets set the timedelta to 0, so it won't have an effect but set all parameter for the next round
-				if(w['last_updated_gen']==None):
-					time_delta = 0
-				else:
-					time_delta = (now-w['last_updated_gen']).total_seconds()
-
-				# check if the data are somewhat strange
-				if(time_delta>600):
-					_LOGGER.warning("big time gap of "+str(time_delta)+" sec, on sample "+str(self._sample)+" now:"+str(now)+" and last_updated_gen "+str(w['last_updated_gen']))
-					_LOGGER.warning("the power value was "+str(v)+". This sample will be ignored by setting the time_delta to 0")
-					time_delta = 0
-
-				generated_ws = v*time_delta
-				generated_kwh = generated_ws/(60*60*1000)
-				self.energy_calc['extra']['generated_kwh'] += generated_kwh
-				self.energy_calc['extra']['last_updated_gen'] = now
-				self.energy_calc['extra']['generator_w'] = float(new_state.state)
-			elif(new_state.entity_id == self._net):
-				#_LOGGER.error("NET")
-
-				# reset data when day changes, we're using NET here because solar won't change over night
-				if(w['last_updated_net']==None or now.day != w['last_updated_net'].day):
-					#_LOGGER.info("reset data, due to day change")
-					#_LOGGER.info("Sample "+str(self._sample)+" old was "+str(now)+" and last_update_net "+str(w['last_updated_net']))
+			# if this is the very first dataset, lets set the timedelta to 0, so it won't have an effect but set all parameter for the next round
+			# or reset data when day changes
+			if(w['last_updated_calc']==None):
+				#_LOGGER.info("reset data, due to day change")
+				#_LOGGER.info("Sample "+str(self._sample)+" old was "+str(now)+" and last_update_net "+str(w['last_updated_net']))
+				self.energy_calc['extra']['generated_kwh'] = 0
+				self.energy_calc['extra']['feed_in_kwh'] = 0
+				self.energy_calc['extra']['feed_out_kwh'] = 0
+				self.energy_calc['extra']['self_consumed_kwh'] = 0
+				self.energy_calc['extra']['total_consumed_kwh'] = 0
+				time_delta = 0
+			else:
+				time_delta = (now-w['last_updated_calc']).total_seconds()
+				if(now.day != w['last_updated_calc'].day):
 					self.energy_calc['extra']['generated_kwh'] = 0
 					self.energy_calc['extra']['feed_in_kwh'] = 0
 					self.energy_calc['extra']['feed_out_kwh'] = 0
 					self.energy_calc['extra']['self_consumed_kwh'] = 0
 					self.energy_calc['extra']['total_consumed_kwh'] = 0
+					time_delta = 0
 
+			# store current date for next update
+			self.energy_calc['extra']['last_updated_calc'] = now	
+
+			# check if the data are somewhat strange
+			if(time_delta>600 or time_delta<0):
+				_LOGGER.warning("big time gap of "+str(time_delta)+" sec, on sample "+str(self._sample)+" now:"+str(now)+" and last_updated_calc "+str(w['last_updated_calc']))
+				_LOGGER.warning("the power value was "+str(gen_w_old)+". This sample will be ignored by setting the time_delta to 0")
+				time_delta = 0
+
+			# calc generate kWh
+			generated_ws = gen_w_old*time_delta
+			generated_kwh = generated_ws/(60*60*1000)
+			self.energy_calc['extra']['generated_kwh'] += generated_kwh
+
+			# calc consumption 
+			if(net_w_old>0):
+				#_LOGGER.debug("buying power from net: %i", net_w_old)
+				v_ws = net_w_old*time_delta
+				v_kwh = v_ws/(60*60*1000)
+				self.energy_calc['extra']['feed_out_kwh'] += v_kwh
+
+				#gen: 800W, feed_out 123W, last update 2 sec ago: 800W*2sec self consumed
+				consume_ws = (w['generator_w'])*time_delta # we've self-consumed all of the generator power (actually even more in total)
+				consume_kwh = consume_ws/(60*60*1000)
+				self.energy_calc['extra']['self_consumed_kwh'] += consume_kwh
+			elif(net_w_old<0):
+				va = net_w_old*(-1)
+				#_LOGGER.debug("Feed_in (sell) %i", va)
+				va_ws = va*time_delta
+				va_kwh = va_ws/(60*60*1000)
+				self.energy_calc['extra']['feed_in_kwh'] += va_kwh
+
+				#gen: 800W, feed_in 400W, last update 2 sec ago: 400W*2sec self consumed
+				consume_ws = (w['generator_w']-va)*time_delta # substract the part that we've fed into the net from the generator
+				consume_kwh = consume_ws/(60*60*1000)
+				self.energy_calc['extra']['self_consumed_kwh'] += consume_kwh
+
+			# calc percentage useage
+			if(self.energy_calc['extra']['generated_kwh']!=0):
+				self.energy_calc['self_consumed_per'] = self.energy_calc['extra']['self_consumed_kwh']/self.energy_calc['extra']['generated_kwh']*100
+			else:
+				self.energy_calc['self_consumed_per'] = 0
+
+			# update time / total and current home usage
+			self.energy_calc['extra']['total_consumed_kwh'] = self.energy_calc['extra']['generated_kwh'] - self.energy_calc['extra']['feed_in_kwh'] + self.energy_calc['extra']['feed_out_kwh']
+			#_LOGGER.error("INCOMING "+str(new_state.entity_id)+" / "+str(new_state.state)+" / "+str(new_state.last_changed)+" / "+str(time_delta)+ " / "+str(self.energy_calc['extra']['self_consumed_kwh'])+" / "+str(self.energy_calc['extra']['total_consumed_kwh'])) 
+			if(self.energy_calc['extra']['self_consumed_kwh']!=0):
+				self.energy_calc['extra']['home_from_solar_per'] = self.energy_calc['extra']['self_consumed_kwh']/self.energy_calc['extra']['total_consumed_kwh']*100
+			else:
+				self.energy_calc['extra']['home_from_solar_per'] = 0
+
+			self.energy_calc['extra']['home_w'] = self.energy_calc['extra']['generator_w'] + self.energy_calc['extra']['net_w']
+
+
+			# decide if the is grid or solar
+			if(new_state.entity_id == self._gen):
+				#_LOGGER.error("GEN")
+				#_LOGGER.error(gen_w_old)			
+				#_LOGGER.error("INCOMING "+str(new_state.entity_id)+" / "+str(new_state.state)+" / "+str(new_state.last_changed)+" / "+str(time_delta))
+
+				self.energy_calc['extra']['last_updated_gen'] = now
+				self.energy_calc['extra']['generator_w'] = float(new_state.state)
+			elif(new_state.entity_id == self._net):
+				#_LOGGER.error("NET")
 				############ calc ################
-				v = self.energy_calc['extra']['net_w']
 				# if this is the very first dataset, lets set the timedelta to 0, so it won't have an effect but set all parameter for the next round
-				if(w['last_updated_net']==None):
-					time_delta = 0
-				else:
-					time_delta = (now-w['last_updated_net']).total_seconds()
-
-				# check if the data are somewhat strange
-				if(time_delta>600):
-					_LOGGER.warning("big time gap of "+str(time_delta)+" sec, on sample "+str(self._sample)+" now:"+str(now)+" and last_updated_net "+str(w['last_updated_net']))
-					_LOGGER.warning("the power value was "+str(v)+". This sample will be ignored by setting the time_delta to 0")
-					time_delta = 0
-
-				self.energy_calc['extra']['net_w'] = float(new_state.state)
-
-				if(v>0):
-					#_LOGGER.debug("Feed_out (buy) %i", v)
-					v_ws = v*time_delta
-					v_kwh = v_ws/(60*60*1000)
-					self.energy_calc['extra']['feed_out_kwh'] += v_kwh
-
-					#gen: 800W, feed_in -123W, last update 2 sec ago: 800W*2sec self consumed
-					consume_ws = (w['generator_w'])*time_delta
-					consume_kwh = consume_ws/(60*60*1000)
-					self.energy_calc['extra']['self_consumed_kwh'] += consume_kwh
-				elif(v<0):
-					va = v*(-1)
-					#_LOGGER.debug("Feed_in (sell) %i", va)
-					va_ws = va*time_delta
-					va_kwh = va_ws/(60*60*1000)
-					self.energy_calc['extra']['feed_in_kwh'] += va_kwh
-
-					#gen: 800W, feed_in 400W, last update 2 sec ago: 400W*2sec self consumed
-					consume_ws = (w['generator_w']-va)*time_delta
-					consume_kwh = consume_ws/(60*60*1000)
-					self.energy_calc['extra']['self_consumed_kwh'] += consume_kwh
-
-				# calc percentage useage
-				if(self.energy_calc['extra']['generated_kwh']!=0):
-					self.energy_calc['self_consumed_per'] = self.energy_calc['extra']['self_consumed_kwh']/self.energy_calc['extra']['generated_kwh']*100
-				else:
-					self.energy_calc['self_consumed_per'] = 0
-
-				# update time / total and current home usage
 				self.energy_calc['extra']['last_updated_net'] = now
-				self.energy_calc['extra']['total_consumed_kwh'] = w['generated_kwh'] - w['feed_in_kwh'] + w['feed_out_kwh']
-				if(self.energy_calc['extra']['self_consumed_kwh']!=0):
-					self.energy_calc['extra']['home_from_solar_per'] = self.energy_calc['extra']['self_consumed_kwh']/self.energy_calc['extra']['total_consumed_kwh']*100
-				else:
-					self.energy_calc['extra']['home_from_solar_per'] = 0
-
-				self.energy_calc['extra']['home_w'] = self.energy_calc['extra']['generator_w'] + self.energy_calc['extra']['net_w']
+				self.energy_calc['extra']['net_w'] = float(new_state.state)
 
 
 			self.async_schedule_update_ha_state(True)
@@ -300,6 +299,18 @@ class energy_calc_sensor(Entity):
 			self.exc()
 
 
+	def _fetch_states_from_database(self,entity) -> list[State]:
+		_LOGGER.debug("%s: initializing values from the database", entity)
+		start_date = datetime.datetime.now(get_localzone()).replace(microsecond=0, second=0, minute=0, hour=0)
+		_LOGGER.debug("%s: retrieve records not older then %s",entity,start_date)
+		return  history.state_changes_during_period(
+			self.hass,
+			start_date,
+			entity_id=entity.lower(),
+			descending=True,
+			include_start_time_state=False,
+		).get(entity.lower(), [])
+
 
 	async def _async_initialize_from_database(self):
 		"""Initialize the list of states from the database.
@@ -309,37 +320,15 @@ class energy_calc_sensor(Entity):
 		If MaxAge is provided then query will restrict to entries younger then
 		current datetime - MaxAge.
 		"""
-		# limit range
-		records_older_then = datetime.datetime.now(get_localzone()).replace(microsecond=0, second=0, minute=0, hour=0)
-		#_LOGGER.error("DB time limit:")
-		#_LOGGER.error(records_older_then)
-
-		with session_scope(hass=self.hass) as session:
-
-			# grab grid data
-			query = session.query(States).filter(States.entity_id == self._net)
-			query = query.filter(States.last_updated >= records_older_then)
-			states_net = execute(query)
-
-			# grab solar data
-			query = session.query(States).filter(States.entity_id == self._gen)
-			query = query.filter(States.last_updated >= records_older_then)
-			states_gen = execute(query)
-
-			# merge and sort by date
+		states_net = await get_instance(self.hass).async_add_executor_job(self._fetch_states_from_database, self._net)
+		states_gen = await get_instance(self.hass).async_add_executor_job(self._fetch_states_from_database, self._gen)
+		if(states_net and states_gen):
 			states = states_net + states_gen
 			#_LOGGER.error(states[0].last_updated)
-
-
 			states.sort(key=lambda x: x.last_updated)
+			for state in states:
+				#_LOGGER.error("Database "+str(state.entity_id)+" / "+str(state.state)+" / "+str(state.last_changed))
+				self.add_state(entity="", new_state=state)
 
-			#_LOGGER.error(str(len(states))+" entries found in db")
-			session.expunge_all()
-
-		for state in states:
-			#all should be older based on the filter .. but we've seen strange behavior
-			#if(state.last_updated > records_older_then):
-			self.add_state(entity="", new_state=state)
-			#else:
-			#	_LOGGER.error("strange:"+str(state.last_updated))
-		#_LOGGER.error("db done")
+		self.async_schedule_update_ha_state(True)
+		_LOGGER.debug("%s: initializing from database completed", self.entity_id)
